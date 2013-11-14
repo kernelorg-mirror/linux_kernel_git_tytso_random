@@ -28,6 +28,7 @@
 #include <asm/pgtable.h>
 #include <asm/nmi.h>
 #include <asm/switch_to.h>
+#include <asm/facility.h>
 #include <asm/sclp.h>
 #include "kvm-s390.h"
 #include "gaccess.h"
@@ -84,8 +85,14 @@ struct kvm_stats_debugfs_item debugfs_entries[] = {
 	{ NULL }
 };
 
-static unsigned long long *facilities;
+unsigned long *vfacilities;
 static struct gmap_notifier gmap_notifier;
+
+/* test availability of vfacility */
+static inline int test_vfacility(unsigned long nr)
+{
+	return __test_facility(nr, (void *) vfacilities);
+}
 
 /* Section: not file related */
 int kvm_arch_hardware_enable(void *garbage)
@@ -336,10 +343,11 @@ void kvm_arch_vcpu_uninit(struct kvm_vcpu *vcpu)
 
 void kvm_arch_vcpu_load(struct kvm_vcpu *vcpu, int cpu)
 {
-	save_fp_regs(&vcpu->arch.host_fpregs);
+	save_fp_ctl(&vcpu->arch.host_fpregs.fpc);
+	save_fp_regs(vcpu->arch.host_fpregs.fprs);
 	save_access_regs(vcpu->arch.host_acrs);
-	vcpu->arch.guest_fpregs.fpc &= FPC_VALID_MASK;
-	restore_fp_regs(&vcpu->arch.guest_fpregs);
+	restore_fp_ctl(&vcpu->arch.guest_fpregs.fpc);
+	restore_fp_regs(vcpu->arch.guest_fpregs.fprs);
 	restore_access_regs(vcpu->run->s.regs.acrs);
 	gmap_enable(vcpu->arch.gmap);
 	atomic_set_mask(CPUSTAT_RUNNING, &vcpu->arch.sie_block->cpuflags);
@@ -349,9 +357,11 @@ void kvm_arch_vcpu_put(struct kvm_vcpu *vcpu)
 {
 	atomic_clear_mask(CPUSTAT_RUNNING, &vcpu->arch.sie_block->cpuflags);
 	gmap_disable(vcpu->arch.gmap);
-	save_fp_regs(&vcpu->arch.guest_fpregs);
+	save_fp_ctl(&vcpu->arch.guest_fpregs.fpc);
+	save_fp_regs(vcpu->arch.guest_fpregs.fprs);
 	save_access_regs(vcpu->run->s.regs.acrs);
-	restore_fp_regs(&vcpu->arch.host_fpregs);
+	restore_fp_ctl(&vcpu->arch.host_fpregs.fpc);
+	restore_fp_regs(vcpu->arch.host_fpregs.fprs);
 	restore_access_regs(vcpu->arch.host_acrs);
 }
 
@@ -387,7 +397,7 @@ int kvm_arch_vcpu_setup(struct kvm_vcpu *vcpu)
 	vcpu->arch.sie_block->ecb   = 6;
 	vcpu->arch.sie_block->ecb2  = 8;
 	vcpu->arch.sie_block->eca   = 0xC1002001U;
-	vcpu->arch.sie_block->fac   = (int) (long) facilities;
+	vcpu->arch.sie_block->fac   = (int) (long) vfacilities;
 	hrtimer_init(&vcpu->arch.ckc_timer, CLOCK_REALTIME, HRTIMER_MODE_ABS);
 	tasklet_init(&vcpu->arch.tasklet, kvm_s390_tasklet,
 		     (unsigned long) vcpu);
@@ -611,9 +621,12 @@ int kvm_arch_vcpu_ioctl_get_sregs(struct kvm_vcpu *vcpu,
 
 int kvm_arch_vcpu_ioctl_set_fpu(struct kvm_vcpu *vcpu, struct kvm_fpu *fpu)
 {
+	if (test_fp_ctl(fpu->fpc))
+		return -EINVAL;
 	memcpy(&vcpu->arch.guest_fpregs.fprs, &fpu->fprs, sizeof(fpu->fprs));
-	vcpu->arch.guest_fpregs.fpc = fpu->fpc & FPC_VALID_MASK;
-	restore_fp_regs(&vcpu->arch.guest_fpregs);
+	vcpu->arch.guest_fpregs.fpc = fpu->fpc;
+	restore_fp_ctl(&vcpu->arch.guest_fpregs.fpc);
+	restore_fp_regs(vcpu->arch.guest_fpregs.fprs);
 	return 0;
 }
 
@@ -869,7 +882,8 @@ int kvm_s390_vcpu_store_status(struct kvm_vcpu *vcpu, unsigned long addr)
 	 * copying in vcpu load/put. Lets update our copies before we save
 	 * it into the save area
 	 */
-	save_fp_regs(&vcpu->arch.guest_fpregs);
+	save_fp_ctl(&vcpu->arch.guest_fpregs.fpc);
+	save_fp_regs(vcpu->arch.guest_fpregs.fprs);
 	save_access_regs(vcpu->run->s.regs.acrs);
 
 	if (__guestcopy(vcpu, addr + offsetof(struct save_area, fp_regs),
@@ -1063,6 +1077,10 @@ int kvm_arch_create_memslot(struct kvm_memory_slot *slot, unsigned long npages)
 	return 0;
 }
 
+void kvm_arch_memslots_updated(struct kvm *kvm)
+{
+}
+
 /* Section: memory related */
 int kvm_arch_prepare_memory_region(struct kvm *kvm,
 				   struct kvm_memory_slot *memslot,
@@ -1129,20 +1147,20 @@ static int __init kvm_s390_init(void)
 	 * to hold the maximum amount of facilities. On the other hand, we
 	 * only set facilities that are known to work in KVM.
 	 */
-	facilities = (unsigned long long *) get_zeroed_page(GFP_KERNEL|GFP_DMA);
-	if (!facilities) {
+	vfacilities = (unsigned long *) get_zeroed_page(GFP_KERNEL|GFP_DMA);
+	if (!vfacilities) {
 		kvm_exit();
 		return -ENOMEM;
 	}
-	memcpy(facilities, S390_lowcore.stfle_fac_list, 16);
-	facilities[0] &= 0xff82fff3f47c0000ULL;
-	facilities[1] &= 0x001c000000000000ULL;
+	memcpy(vfacilities, S390_lowcore.stfle_fac_list, 16);
+	vfacilities[0] &= 0xff82fff3f47c0000UL;
+	vfacilities[1] &= 0x001c000000000000UL;
 	return 0;
 }
 
 static void __exit kvm_s390_exit(void)
 {
-	free_page((unsigned long) facilities);
+	free_page((unsigned long) vfacilities);
 	kvm_exit();
 }
 

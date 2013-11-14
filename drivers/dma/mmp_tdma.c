@@ -350,12 +350,7 @@ struct mmp_tdma_desc *mmp_tdma_alloc_descriptor(struct mmp_tdma_chan *tdmac)
 	if (!gpool)
 		return NULL;
 
-	tdmac->desc_arr = (void *)gen_pool_alloc(gpool, size);
-	if (!tdmac->desc_arr)
-		return NULL;
-
-	tdmac->desc_arr_phys = gen_pool_virt_to_phys(gpool,
-			(unsigned long)tdmac->desc_arr);
+	tdmac->desc_arr = gen_pool_dma_alloc(gpool, size, &tdmac->desc_arr_phys);
 
 	return tdmac->desc_arr;
 }
@@ -460,7 +455,8 @@ static enum dma_status mmp_tdma_tx_status(struct dma_chan *chan,
 {
 	struct mmp_tdma_chan *tdmac = to_mmp_tdma_chan(chan);
 
-	dma_set_residue(txstate, tdmac->buf_len - tdmac->pos);
+	dma_set_tx_state(txstate, chan->completed_cookie, chan->cookie,
+			 tdmac->buf_len - tdmac->pos);
 
 	return tdmac->status;
 }
@@ -549,9 +545,6 @@ static int mmp_tdma_probe(struct platform_device *pdev)
 	}
 
 	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!iores)
-		return -EINVAL;
-
 	tdev->base = devm_ioremap_resource(&pdev->dev, iores);
 	if (IS_ERR(tdev->base))
 		return PTR_ERR(tdev->base);

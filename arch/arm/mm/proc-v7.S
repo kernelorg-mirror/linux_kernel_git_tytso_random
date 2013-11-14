@@ -83,7 +83,7 @@ ENTRY(cpu_v7_dcache_clean_area)
 	add	r0, r0, r2
 	subs	r1, r1, r2
 	bhi	2b
-	dsb
+	dsb	ishst
 	mov	pc, lr
 ENDPROC(cpu_v7_dcache_clean_area)
 
@@ -330,7 +330,19 @@ __v7_setup:
 1:
 #endif
 
-3:	mov	r10, #0
+	/* Cortex-A15 Errata */
+3:	ldr	r10, =0x00000c0f		@ Cortex-A15 primary part number
+	teq	r0, r10
+	bne	4f
+
+#ifdef CONFIG_ARM_ERRATA_773022
+	cmp	r6, #0x4			@ only present up to r0p4
+	mrcle	p15, 0, r10, c1, c0, 1		@ read aux control register
+	orrle	r10, r10, #1 << 1		@ disable loop buffer
+	mcrle	p15, 0, r10, c1, c0, 1		@ write aux control register
+#endif
+
+4:	mov	r10, #0
 	mcr	p15, 0, r10, c7, c5, 0		@ I+BTB cache invalidate
 	dsb
 #ifdef CONFIG_MMU
@@ -355,9 +367,7 @@ __v7_setup:
 #endif
 	adr	r5, v7_crval
 	ldmia	r5, {r5, r6}
-#ifdef CONFIG_CPU_ENDIAN_BE8
-	orr	r6, r6, #1 << 25		@ big-endian page tables
-#endif
+ ARM_BE8(orr	r6, r6, #1 << 25)		@ big-endian page tables
 #ifdef CONFIG_SWP_EMULATE
 	orr     r5, r5, #(1 << 10)              @ set SW bit in "clear"
 	bic     r6, r6, #(1 << 10)              @ clear it in "mmuset"

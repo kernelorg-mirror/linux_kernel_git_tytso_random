@@ -368,11 +368,8 @@ static struct nfs4_delegation *
 alloc_init_deleg(struct nfs4_client *clp, struct nfs4_ol_stateid *stp, struct svc_fh *current_fh)
 {
 	struct nfs4_delegation *dp;
-	struct nfs4_file *fp = stp->st_file;
 
 	dprintk("NFSD alloc_init_deleg\n");
-	if (fp->fi_had_conflict)
-		return NULL;
 	if (num_delegations > max_delegations)
 		return NULL;
 	dp = delegstateid(nfs4_alloc_stid(clp, deleg_slab));
@@ -389,8 +386,7 @@ alloc_init_deleg(struct nfs4_client *clp, struct nfs4_ol_stateid *stp, struct sv
 	INIT_LIST_HEAD(&dp->dl_perfile);
 	INIT_LIST_HEAD(&dp->dl_perclnt);
 	INIT_LIST_HEAD(&dp->dl_recall_lru);
-	get_nfs4_file(fp);
-	dp->dl_file = fp;
+	dp->dl_file = NULL;
 	dp->dl_type = NFS4_OPEN_DELEGATE_READ;
 	fh_copy_shallow(&dp->dl_fh, &current_fh->fh_handle);
 	dp->dl_time = 0;
@@ -3012,7 +3008,7 @@ static struct file_lock *nfs4_alloc_init_lease(struct nfs4_delegation *dp, int f
 		return NULL;
 	locks_init_lock(fl);
 	fl->fl_lmops = &nfsd_lease_mng_ops;
-	fl->fl_flags = FL_LEASE;
+	fl->fl_flags = FL_DELEG;
 	fl->fl_type = flag == NFS4_OPEN_DELEGATE_READ? F_RDLCK: F_WRLCK;
 	fl->fl_end = OFFSET_MAX;
 	fl->fl_owner = (fl_owner_t)(dp->dl_file);
@@ -3035,7 +3031,7 @@ static int nfs4_setlease(struct nfs4_delegation *dp)
 	if (status) {
 		list_del_init(&dp->dl_perclnt);
 		locks_free_lock(fl);
-		return -ENOMEM;
+		return status;
 	}
 	fp->fi_lease = fl;
 	fp->fi_deleg_file = get_file(fl->fl_file);
@@ -3044,22 +3040,35 @@ static int nfs4_setlease(struct nfs4_delegation *dp)
 	return 0;
 }
 
-static int nfs4_set_delegation(struct nfs4_delegation *dp)
+static int nfs4_set_delegation(struct nfs4_delegation *dp, struct nfs4_file *fp)
 {
-	struct nfs4_file *fp = dp->dl_file;
+	int status;
 
-	if (!fp->fi_lease)
-		return nfs4_setlease(dp);
+	if (fp->fi_had_conflict)
+		return -EAGAIN;
+	get_nfs4_file(fp);
+	dp->dl_file = fp;
+	if (!fp->fi_lease) {
+		status = nfs4_setlease(dp);
+		if (status)
+			goto out_free;
+		return 0;
+	}
 	spin_lock(&recall_lock);
 	if (fp->fi_had_conflict) {
 		spin_unlock(&recall_lock);
-		return -EAGAIN;
+		status = -EAGAIN;
+		goto out_free;
 	}
 	atomic_inc(&fp->fi_delegees);
 	list_add(&dp->dl_perfile, &fp->fi_delegations);
 	spin_unlock(&recall_lock);
 	list_add(&dp->dl_perclnt, &dp->dl_stid.sc_client->cl_delegations);
 	return 0;
+out_free:
+	put_nfs4_file(fp);
+	dp->dl_file = fp;
+	return status;
 }
 
 static void nfsd4_open_deleg_none_ext(struct nfsd4_open *open, int status)
@@ -3134,7 +3143,7 @@ nfs4_open_delegation(struct net *net, struct svc_fh *fh,
 	dp = alloc_init_deleg(oo->oo_owner.so_client, stp, fh);
 	if (dp == NULL)
 		goto out_no_deleg;
-	status = nfs4_set_delegation(dp);
+	status = nfs4_set_delegation(dp, stp->st_file);
 	if (status)
 		goto out_free;
 
@@ -3834,9 +3843,8 @@ nfsd4_open_confirm(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	struct nfs4_ol_stateid *stp;
 	struct nfsd_net *nn = net_generic(SVC_NET(rqstp), nfsd_net_id);
 
-	dprintk("NFSD: nfsd4_open_confirm on file %.*s\n",
-			(int)cstate->current_fh.fh_dentry->d_name.len,
-			cstate->current_fh.fh_dentry->d_name.name);
+	dprintk("NFSD: nfsd4_open_confirm on file %pd\n",
+			cstate->current_fh.fh_dentry);
 
 	status = fh_verify(rqstp, &cstate->current_fh, S_IFREG, 0);
 	if (status)
@@ -3913,9 +3921,8 @@ nfsd4_open_downgrade(struct svc_rqst *rqstp,
 	struct nfs4_ol_stateid *stp;
 	struct nfsd_net *nn = net_generic(SVC_NET(rqstp), nfsd_net_id);
 
-	dprintk("NFSD: nfsd4_open_downgrade on file %.*s\n", 
-			(int)cstate->current_fh.fh_dentry->d_name.len,
-			cstate->current_fh.fh_dentry->d_name.name);
+	dprintk("NFSD: nfsd4_open_downgrade on file %pd\n", 
+			cstate->current_fh.fh_dentry);
 
 	/* We don't yet support WANT bits: */
 	if (od->od_deleg_want)
@@ -3971,9 +3978,8 @@ nfsd4_close(struct svc_rqst *rqstp, struct nfsd4_compound_state *cstate,
 	struct net *net = SVC_NET(rqstp);
 	struct nfsd_net *nn = net_generic(net, nfsd_net_id);
 
-	dprintk("NFSD: nfsd4_close on file %.*s\n", 
-			(int)cstate->current_fh.fh_dentry->d_name.len,
-			cstate->current_fh.fh_dentry->d_name.name);
+	dprintk("NFSD: nfsd4_close on file %pd\n", 
+			cstate->current_fh.fh_dentry);
 
 	nfs4_lock_state();
 	status = nfs4_preprocess_seqid_op(cstate, close->cl_seqid,

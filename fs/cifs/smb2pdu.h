@@ -150,6 +150,20 @@ struct smb2_err_rsp {
 	__u8   ErrorData[1];  /* variable length */
 } __packed;
 
+struct smb2_symlink_err_rsp {
+	__le32 SymLinkLength;
+	__le32 SymLinkErrorTag;
+	__le32 ReparseTag;
+	__le16 ReparseDataLength;
+	__le16 UnparsedPathLength;
+	__le16 SubstituteNameOffset;
+	__le16 SubstituteNameLength;
+	__le16 PrintNameOffset;
+	__le16 PrintNameLength;
+	__le32 Flags;
+	__u8  PathBuffer[0];
+} __packed;
+
 #define SMB2_CLIENT_GUID_SIZE 16
 
 extern __u8 cifs_client_guid[SMB2_CLIENT_GUID_SIZE];
@@ -462,6 +476,10 @@ struct create_context {
 	__u8 Buffer[0];
 } __packed;
 
+#define SMB2_LEASE_READ_CACHING_HE	0x01
+#define SMB2_LEASE_HANDLE_CACHING_HE	0x02
+#define SMB2_LEASE_WRITE_CACHING_HE	0x04
+
 #define SMB2_LEASE_NONE			__constant_cpu_to_le32(0x00)
 #define SMB2_LEASE_READ_CACHING		__constant_cpu_to_le32(0x01)
 #define SMB2_LEASE_HANDLE_CACHING	__constant_cpu_to_le32(0x02)
@@ -479,10 +497,29 @@ struct lease_context {
 	__le64 LeaseDuration;
 } __packed;
 
+struct lease_context_v2 {
+	__le64 LeaseKeyLow;
+	__le64 LeaseKeyHigh;
+	__le32 LeaseState;
+	__le32 LeaseFlags;
+	__le64 LeaseDuration;
+	__le64 ParentLeaseKeyLow;
+	__le64 ParentLeaseKeyHigh;
+	__le16 Epoch;
+	__le16 Reserved;
+} __packed;
+
 struct create_lease {
 	struct create_context ccontext;
 	__u8   Name[8];
 	struct lease_context lcontext;
+} __packed;
+
+struct create_lease_v2 {
+	struct create_context ccontext;
+	__u8   Name[8];
+	struct lease_context_v2 lcontext;
+	__u8   Pad[4];
 } __packed;
 
 struct create_durable {
@@ -532,6 +569,10 @@ struct network_interface_info_ioctl_rsp {
 
 #define NO_FILE_ID 0xFFFFFFFFFFFFFFFFULL /* general ioctls to srv not to file */
 
+struct compress_ioctl {
+	__le16 CompressionState; /* See cifspdu.h for possible flag values */
+} __packed;
+
 struct smb2_ioctl_req {
 	struct smb2_hdr hdr;
 	__le16 StructureSize;	/* Must be 57 */
@@ -547,7 +588,7 @@ struct smb2_ioctl_req {
 	__le32 MaxOutputResponse;
 	__le32 Flags;
 	__u32  Reserved2;
-	char   Buffer[0];
+	__u8   Buffer[0];
 } __packed;
 
 struct smb2_ioctl_rsp {
@@ -833,14 +874,16 @@ struct smb2_lease_ack {
 
 /* File System Information Classes */
 #define FS_VOLUME_INFORMATION		1 /* Query */
-#define FS_LABEL_INFORMATION		2 /* Set */
+#define FS_LABEL_INFORMATION		2 /* Local only */
 #define FS_SIZE_INFORMATION		3 /* Query */
 #define FS_DEVICE_INFORMATION		4 /* Query */
 #define FS_ATTRIBUTE_INFORMATION	5 /* Query */
 #define FS_CONTROL_INFORMATION		6 /* Query, Set */
 #define FS_FULL_SIZE_INFORMATION	7 /* Query */
 #define FS_OBJECT_ID_INFORMATION	8 /* Query, Set */
-#define FS_DRIVER_PATH_INFORMATION	9 /* Query */
+#define FS_DRIVER_PATH_INFORMATION	9 /* Local only */
+#define FS_VOLUME_FLAGS_INFORMATION	10 /* Local only */
+#define FS_SECTOR_SIZE_INFORMATION	11 /* SMB3 or later. Query */
 
 struct smb2_fs_full_size_info {
 	__le64 TotalAllocationUnits;
@@ -848,6 +891,22 @@ struct smb2_fs_full_size_info {
 	__le64 ActualAvailableAllocationUnits;
 	__le32 SectorsPerAllocationUnit;
 	__le32 BytesPerSector;
+} __packed;
+
+#define SSINFO_FLAGS_ALIGNED_DEVICE		0x00000001
+#define SSINFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE 0x00000002
+#define SSINFO_FLAGS_NO_SEEK_PENALTY		0x00000004
+#define SSINFO_FLAGS_TRIM_ENABLED		0x00000008
+
+/* sector size info struct */
+struct smb3_fs_ss_info {
+	__le32 LogicalBytesPerSector;
+	__le32 PhysicalBytesPerSectorForAtomicity;
+	__le32 PhysicalBytesPerSectorForPerf;
+	__le32 FileSystemEffectivePhysicalBytesPerSectorForAtomicity;
+	__le32 Flags;
+	__le32 ByteOffsetForSectorAlignment;
+	__le32 ByteOffsetForPartitionAlignment;
 } __packed;
 
 /* partial list of QUERY INFO levels */

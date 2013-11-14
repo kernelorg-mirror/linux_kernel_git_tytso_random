@@ -149,8 +149,6 @@ static void arc_emac_tx_clean(struct net_device *ndev)
 		struct sk_buff *skb = tx_buff->skb;
 		unsigned int info = le32_to_cpu(txbd->info);
 
-		*txbd_dirty = (*txbd_dirty + 1) % TX_BD_NUM;
-
 		if ((info & FOR_EMAC) || !txbd->data)
 			break;
 
@@ -179,6 +177,8 @@ static void arc_emac_tx_clean(struct net_device *ndev)
 
 		txbd->data = 0;
 		txbd->info = 0;
+
+		*txbd_dirty = (*txbd_dirty + 1) % TX_BD_NUM;
 
 		if (netif_queue_stopped(ndev))
 			netif_wake_queue(ndev);
@@ -628,12 +628,12 @@ static const struct net_device_ops arc_emac_netdev_ops = {
 
 static int arc_emac_probe(struct platform_device *pdev)
 {
-	struct resource res_regs, res_irq;
+	struct resource res_regs;
 	struct device_node *phy_node;
 	struct arc_emac_priv *priv;
 	struct net_device *ndev;
 	const char *mac_addr;
-	unsigned int id, clock_frequency;
+	unsigned int id, clock_frequency, irq;
 	int err;
 
 	if (!pdev->dev.of_node)
@@ -661,8 +661,8 @@ static int arc_emac_probe(struct platform_device *pdev)
 	}
 
 	/* Get IRQ from device tree */
-	err = of_irq_to_resource(pdev->dev.of_node, 0, &res_irq);
-	if (!err) {
+	irq = irq_of_parse_and_map(pdev->dev.of_node, 0);
+	if (!irq) {
 		dev_err(&pdev->dev, "failed to retrieve <irq> value from device tree\n");
 		return -ENODEV;
 	}
@@ -671,6 +671,7 @@ static int arc_emac_probe(struct platform_device *pdev)
 	if (!ndev)
 		return -ENOMEM;
 
+	platform_set_drvdata(pdev, ndev);
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 
 	ndev->netdev_ops = &arc_emac_netdev_ops;
@@ -711,7 +712,7 @@ static int arc_emac_probe(struct platform_device *pdev)
 		goto out;
 	}
 
-	ndev->irq = res_irq.start;
+	ndev->irq = irq;
 	dev_info(&pdev->dev, "IRQ is %d\n", ndev->irq);
 
 	/* Register interrupt handler for device */
@@ -725,10 +726,10 @@ static int arc_emac_probe(struct platform_device *pdev)
 	/* Get MAC address from device tree */
 	mac_addr = of_get_mac_address(pdev->dev.of_node);
 
-	if (!mac_addr || !is_valid_ether_addr(mac_addr))
-		eth_hw_addr_random(ndev);
-	else
+	if (mac_addr)
 		memcpy(ndev->dev_addr, mac_addr, ETH_ALEN);
+	else
+		eth_hw_addr_random(ndev);
 
 	dev_info(&pdev->dev, "MAC address is now %pM\n", ndev->dev_addr);
 

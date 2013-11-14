@@ -18,6 +18,7 @@
 #include <linux/cpumask.h>
 
 struct device;
+struct device_node;
 
 struct cpu {
 	int node_id;		/* The node which contains the CPU */
@@ -28,6 +29,9 @@ struct cpu {
 extern int register_cpu(struct cpu *cpu, int num);
 extern struct device *get_cpu_device(unsigned cpu);
 extern bool cpu_is_hotpluggable(unsigned cpu);
+extern bool arch_match_cpu_phys_id(int cpu, u64 phys_id);
+extern bool arch_find_n_match_cpu_physical_id(struct device_node *cpun,
+					      int cpu, unsigned int *thread);
 
 extern int cpu_add_dev_attr(struct device_attribute *attr);
 extern void cpu_remove_dev_attr(struct device_attribute *attr);
@@ -172,6 +176,8 @@ extern struct bus_type cpu_subsys;
 #ifdef CONFIG_HOTPLUG_CPU
 /* Stop CPUs going up and down. */
 
+extern void cpu_hotplug_begin(void);
+extern void cpu_hotplug_done(void);
 extern void get_online_cpus(void);
 extern void put_online_cpus(void);
 extern void cpu_hotplug_disable(void);
@@ -197,6 +203,8 @@ static inline void cpu_hotplug_driver_unlock(void)
 
 #else		/* CONFIG_HOTPLUG_CPU */
 
+static inline void cpu_hotplug_begin(void) {}
+static inline void cpu_hotplug_done(void) {}
 #define get_online_cpus()	do { } while (0)
 #define put_online_cpus()	do { } while (0)
 #define cpu_hotplug_disable()	do { } while (0)

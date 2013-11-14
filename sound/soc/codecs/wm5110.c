@@ -58,14 +58,10 @@ static DECLARE_TLV_DB_SCALE(ng_tlv, -10200, 600, 0);
 	SOC_SINGLE(name " NG SPKDAT2R Switch", base, 11, 1, 0)
 
 static const struct snd_kcontrol_new wm5110_snd_controls[] = {
-SOC_SINGLE("IN1 High Performance Switch", ARIZONA_IN1L_CONTROL,
-	   ARIZONA_IN1_OSR_SHIFT, 1, 0),
-SOC_SINGLE("IN2 High Performance Switch", ARIZONA_IN2L_CONTROL,
-	   ARIZONA_IN2_OSR_SHIFT, 1, 0),
-SOC_SINGLE("IN3 High Performance Switch", ARIZONA_IN3L_CONTROL,
-	   ARIZONA_IN3_OSR_SHIFT, 1, 0),
-SOC_SINGLE("IN4 High Performance Switch", ARIZONA_IN4L_CONTROL,
-	   ARIZONA_IN4_OSR_SHIFT, 1, 0),
+SOC_ENUM("IN1 OSR", arizona_in_dmic_osr[0]),
+SOC_ENUM("IN2 OSR", arizona_in_dmic_osr[1]),
+SOC_ENUM("IN3 OSR", arizona_in_dmic_osr[2]),
+SOC_ENUM("IN4 OSR", arizona_in_dmic_osr[3]),
 
 SOC_SINGLE_RANGE_TLV("IN1L Volume", ARIZONA_IN1L_CONTROL,
 		     ARIZONA_IN1L_PGA_VOL_SHIFT, 0x40, 0x5f, 0, ana_tlv),
@@ -431,6 +427,9 @@ SND_SOC_DAPM_INPUT("IN3L"),
 SND_SOC_DAPM_INPUT("IN3R"),
 SND_SOC_DAPM_INPUT("IN4L"),
 SND_SOC_DAPM_INPUT("IN4R"),
+
+SND_SOC_DAPM_OUTPUT("DRC1 Signal Activity"),
+SND_SOC_DAPM_OUTPUT("DRC2 Signal Activity"),
 
 SND_SOC_DAPM_PGA_E("IN1L PGA", ARIZONA_INPUT_ENABLES, ARIZONA_IN1L_ENA_SHIFT,
 		   0, NULL, 0, arizona_in_ev,
@@ -842,9 +841,6 @@ static const struct snd_soc_dapm_route wm5110_dapm_routes[] = {
 	{ "Tone Generator 1", NULL, "TONE" },
 	{ "Tone Generator 2", NULL, "TONE" },
 
-	{ "Mic Mute Mixer", NULL, "Noise Mixer" },
-	{ "Mic Mute Mixer", NULL, "Mic Mixer" },
-
 	{ "AIF1 Capture", NULL, "AIF1TX1" },
 	{ "AIF1 Capture", NULL, "AIF1TX2" },
 	{ "AIF1 Capture", NULL, "AIF1TX3" },
@@ -979,33 +975,53 @@ static const struct snd_soc_dapm_route wm5110_dapm_routes[] = {
 	ARIZONA_MIXER_ROUTES("LHPF3", "LHPF3"),
 	ARIZONA_MIXER_ROUTES("LHPF4", "LHPF4"),
 
-	ARIZONA_MUX_ROUTES("ASRC1L"),
-	ARIZONA_MUX_ROUTES("ASRC1R"),
-	ARIZONA_MUX_ROUTES("ASRC2L"),
-	ARIZONA_MUX_ROUTES("ASRC2R"),
+	ARIZONA_MIXER_ROUTES("Mic Mute Mixer", "Noise"),
+	ARIZONA_MIXER_ROUTES("Mic Mute Mixer", "Mic"),
 
+	ARIZONA_MUX_ROUTES("ASRC1L", "ASRC1L"),
+	ARIZONA_MUX_ROUTES("ASRC1R", "ASRC1R"),
+	ARIZONA_MUX_ROUTES("ASRC2L", "ASRC2L"),
+	ARIZONA_MUX_ROUTES("ASRC2R", "ASRC2R"),
+
+	{ "AEC Loopback", "HPOUT1L", "OUT1L" },
+	{ "AEC Loopback", "HPOUT1R", "OUT1R" },
 	{ "HPOUT1L", NULL, "OUT1L" },
 	{ "HPOUT1R", NULL, "OUT1R" },
 
+	{ "AEC Loopback", "HPOUT2L", "OUT2L" },
+	{ "AEC Loopback", "HPOUT2R", "OUT2R" },
 	{ "HPOUT2L", NULL, "OUT2L" },
 	{ "HPOUT2R", NULL, "OUT2R" },
 
+	{ "AEC Loopback", "HPOUT3L", "OUT3L" },
+	{ "AEC Loopback", "HPOUT3R", "OUT3R" },
 	{ "HPOUT3L", NULL, "OUT3L" },
 	{ "HPOUT3R", NULL, "OUT3L" },
 
+	{ "AEC Loopback", "SPKOUTL", "OUT4L" },
 	{ "SPKOUTLN", NULL, "OUT4L" },
 	{ "SPKOUTLP", NULL, "OUT4L" },
 
+	{ "AEC Loopback", "SPKOUTR", "OUT4R" },
 	{ "SPKOUTRN", NULL, "OUT4R" },
 	{ "SPKOUTRP", NULL, "OUT4R" },
 
+	{ "AEC Loopback", "SPKDAT1L", "OUT5L" },
+	{ "AEC Loopback", "SPKDAT1R", "OUT5R" },
 	{ "SPKDAT1L", NULL, "OUT5L" },
 	{ "SPKDAT1R", NULL, "OUT5R" },
 
+	{ "AEC Loopback", "SPKDAT2L", "OUT6L" },
+	{ "AEC Loopback", "SPKDAT2R", "OUT6R" },
 	{ "SPKDAT2L", NULL, "OUT6L" },
 	{ "SPKDAT2R", NULL, "OUT6R" },
 
 	{ "MICSUPP", NULL, "SYSCLK" },
+
+	{ "DRC1 Signal Activity", NULL, "DRC1L" },
+	{ "DRC1 Signal Activity", NULL, "DRC1R" },
+	{ "DRC2 Signal Activity", NULL, "DRC2L" },
+	{ "DRC2 Signal Activity", NULL, "DRC2R" },
 };
 
 static int wm5110_set_fll(struct snd_soc_codec *codec, int fll_id, int source,
@@ -1170,6 +1186,7 @@ static int wm5110_codec_probe(struct snd_soc_codec *codec)
 		return ret;
 
 	arizona_init_spk(codec);
+	arizona_init_gpio(codec);
 
 	snd_soc_dapm_disable_pin(&codec->dapm, "HAPTICS");
 

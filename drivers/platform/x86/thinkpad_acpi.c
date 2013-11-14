@@ -23,7 +23,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#define TPACPI_VERSION "0.24"
+#define TPACPI_VERSION "0.25"
 #define TPACPI_SYSFS_VERSION 0x020700
 
 /*
@@ -88,6 +88,7 @@
 
 #include <linux/pci_ids.h>
 
+#include <linux/thinkpad_acpi.h>
 
 /* ThinkPad CMOS commands */
 #define TP_CMOS_VOLUME_DOWN	0
@@ -369,7 +370,7 @@ struct tpacpi_led_classdev {
 	struct led_classdev led_classdev;
 	struct work_struct work;
 	enum led_status_t new_state;
-	unsigned int led;
+	int led;
 };
 
 /* brightness level capabilities */
@@ -2022,8 +2023,6 @@ static u32 hotkey_driver_mask;		/* events needed by the driver */
 static u32 hotkey_user_mask;		/* events visible to userspace */
 static u32 hotkey_acpi_mask;		/* events enabled in firmware */
 
-static unsigned int hotkey_report_mode;
-
 static u16 *hotkey_keycode_map;
 
 static struct attribute_set *hotkey_dev_attributes;
@@ -2282,10 +2281,6 @@ static struct tp_acpi_drv_struct ibm_hotkey_acpidriver;
 static void tpacpi_hotkey_send_key(unsigned int scancode)
 {
 	tpacpi_input_send_key_masked(scancode);
-	if (hotkey_report_mode < 2) {
-		acpi_bus_generate_proc_event(ibm_hotkey_acpidriver.device,
-				0x80, TP_HKEY_EV_HOTKEY_BASE + scancode);
-	}
 }
 
 static void hotkey_read_nvram(struct tp_nvram_state *n, const u32 m)
@@ -2882,18 +2877,6 @@ static void hotkey_tablet_mode_notify_change(void)
 			     "hotkey_tablet_mode");
 }
 
-/* sysfs hotkey report_mode -------------------------------------------- */
-static ssize_t hotkey_report_mode_show(struct device *dev,
-			   struct device_attribute *attr,
-			   char *buf)
-{
-	return snprintf(buf, PAGE_SIZE, "%d\n",
-		(hotkey_report_mode != 0) ? hotkey_report_mode : 1);
-}
-
-static struct device_attribute dev_attr_hotkey_report_mode =
-	__ATTR(hotkey_report_mode, S_IRUGO, hotkey_report_mode_show, NULL);
-
 /* sysfs wakeup reason (pollable) -------------------------------------- */
 static ssize_t hotkey_wakeup_reason_show(struct device *dev,
 			   struct device_attribute *attr,
@@ -2935,7 +2918,6 @@ static struct attribute *hotkey_attributes[] __initdata = {
 	&dev_attr_hotkey_enable.attr,
 	&dev_attr_hotkey_bios_enabled.attr,
 	&dev_attr_hotkey_bios_mask.attr,
-	&dev_attr_hotkey_report_mode.attr,
 	&dev_attr_hotkey_wakeup_reason.attr,
 	&dev_attr_hotkey_wakeup_hotunplug_complete.attr,
 	&dev_attr_hotkey_mask.attr,
@@ -3439,11 +3421,6 @@ static int __init hotkey_init(struct ibm_init_struct *iibm)
 		"initial masks: user=0x%08x, fw=0x%08x, poll=0x%08x\n",
 		hotkey_user_mask, hotkey_acpi_mask, hotkey_source_mask);
 
-	dbg_printk(TPACPI_DBG_INIT | TPACPI_DBG_HKEY,
-			"legacy ibm/hotkey event reporting over procfs %s\n",
-			(hotkey_report_mode < 2) ?
-				"enabled" : "disabled");
-
 	tpacpi_inputdev->open = &hotkey_inputdev_open;
 	tpacpi_inputdev->close = &hotkey_inputdev_close;
 
@@ -3735,13 +3712,6 @@ static void hotkey_notify(struct ibm_struct *ibm, u32 event)
 			pr_notice("unhandled HKEY event 0x%04x\n", hkey);
 			pr_notice("please report the conditions when this "
 				  "event happened to %s\n", TPACPI_MAIL);
-		}
-
-		/* Legacy events */
-		if (!ignore_acpi_ev &&
-		    (send_acpi_ev || hotkey_report_mode < 2)) {
-			acpi_bus_generate_proc_event(ibm->acpi->device,
-						     event, hkey);
 		}
 
 		/* netlink events */
@@ -5327,6 +5297,16 @@ static int __init led_init(struct ibm_init_struct *iibm)
 
 	led_supported = led_init_detect_mode();
 
+	if (led_supported != TPACPI_LED_NONE) {
+		useful_leds = tpacpi_check_quirks(led_useful_qtable,
+				ARRAY_SIZE(led_useful_qtable));
+
+		if (!useful_leds) {
+			led_handle = NULL;
+			led_supported = TPACPI_LED_NONE;
+		}
+	}
+
 	vdbg_printk(TPACPI_DBG_INIT, "LED commands are %s, mode %d\n",
 		str_supported(led_supported), led_supported);
 
@@ -5340,10 +5320,9 @@ static int __init led_init(struct ibm_init_struct *iibm)
 		return -ENOMEM;
 	}
 
-	useful_leds = tpacpi_check_quirks(led_useful_qtable,
-					  ARRAY_SIZE(led_useful_qtable));
-
 	for (i = 0; i < TPACPI_LED_NUMLEDS; i++) {
+		tpacpi_leds[i].led = -1;
+
 		if (!tpacpi_is_led_restricted(i) &&
 		    test_bit(i, &useful_leds)) {
 			rc = tpacpi_init_led(i);
@@ -5401,8 +5380,12 @@ static int led_write(char *buf)
 		return -ENODEV;
 
 	while ((cmd = next_cmd(&buf))) {
-		if (sscanf(cmd, "%d", &led) != 1 || led < 0 || led > 15)
+		if (sscanf(cmd, "%d", &led) != 1)
 			return -EINVAL;
+
+		if (led < 0 || led > (TPACPI_LED_NUMLEDS - 1) ||
+				tpacpi_leds[led].led < 0)
+			return -ENODEV;
 
 		if (strstr(cmd, "off")) {
 			s = TPACPI_LED_OFF;
@@ -8368,6 +8351,91 @@ static struct ibm_struct fan_driver_data = {
 	.resume = fan_resume,
 };
 
+/*************************************************************************
+ * Mute LED subdriver
+ */
+
+
+struct tp_led_table {
+	acpi_string name;
+	int on_value;
+	int off_value;
+	int state;
+};
+
+static struct tp_led_table led_tables[] = {
+	[TPACPI_LED_MUTE] = {
+		.name = "SSMS",
+		.on_value = 1,
+		.off_value = 0,
+	},
+	[TPACPI_LED_MICMUTE] = {
+		.name = "MMTS",
+		.on_value = 2,
+		.off_value = 0,
+	},
+};
+
+static int mute_led_on_off(struct tp_led_table *t, bool state)
+{
+	acpi_handle temp;
+	int output;
+
+	if (!ACPI_SUCCESS(acpi_get_handle(hkey_handle, t->name, &temp))) {
+		pr_warn("Thinkpad ACPI has no %s interface.\n", t->name);
+		return -EIO;
+	}
+
+	if (!acpi_evalf(hkey_handle, &output, t->name, "dd",
+			state ? t->on_value : t->off_value))
+		return -EIO;
+
+	t->state = state;
+	return state;
+}
+
+int tpacpi_led_set(int whichled, bool on)
+{
+	struct tp_led_table *t;
+
+	if (whichled < 0 || whichled >= TPACPI_LED_MAX)
+		return -EINVAL;
+
+	t = &led_tables[whichled];
+	if (t->state < 0 || t->state == on)
+		return t->state;
+	return mute_led_on_off(t, on);
+}
+EXPORT_SYMBOL_GPL(tpacpi_led_set);
+
+static int mute_led_init(struct ibm_init_struct *iibm)
+{
+	acpi_handle temp;
+	int i;
+
+	for (i = 0; i < TPACPI_LED_MAX; i++) {
+		struct tp_led_table *t = &led_tables[i];
+		if (ACPI_SUCCESS(acpi_get_handle(hkey_handle, t->name, &temp)))
+			mute_led_on_off(t, false);
+		else
+			t->state = -ENODEV;
+	}
+	return 0;
+}
+
+static void mute_led_exit(void)
+{
+	int i;
+
+	for (i = 0; i < TPACPI_LED_MAX; i++)
+		tpacpi_led_set(i, false);
+}
+
+static struct ibm_struct mute_led_driver_data = {
+	.name = "mute_led",
+	.exit = mute_led_exit,
+};
+
 /****************************************************************************
  ****************************************************************************
  *
@@ -8786,6 +8854,10 @@ static struct ibm_init_struct ibms_init[] __initdata = {
 		.init = fan_init,
 		.data = &fan_driver_data,
 	},
+	{
+		.init = mute_led_init,
+		.data = &mute_led_driver_data,
+	},
 };
 
 static int __init set_ibm_param(const char *val, struct kernel_param *kp)
@@ -8839,11 +8911,6 @@ MODULE_PARM_DESC(brightness_mode,
 module_param(brightness_enable, uint, 0444);
 MODULE_PARM_DESC(brightness_enable,
 		 "Enables backlight control when 1, disables when 0");
-
-module_param(hotkey_report_mode, uint, 0444);
-MODULE_PARM_DESC(hotkey_report_mode,
-		 "used for backwards compatibility with userspace, "
-		 "see documentation");
 
 #ifdef CONFIG_THINKPAD_ACPI_ALSA_SUPPORT
 module_param_named(volume_mode, volume_mode, uint, 0444);
@@ -8974,10 +9041,6 @@ static int __init thinkpad_acpi_module_init(void)
 	int ret, i;
 
 	tpacpi_lifecycle = TPACPI_LIFE_INIT;
-
-	/* Parameter checking */
-	if (hotkey_report_mode > 2)
-		return -EINVAL;
 
 	/* Driver-level probe */
 
